@@ -19,7 +19,8 @@ public sealed class BackupService
         run = runner;
     }
 
-    public async Task<BackupResult> BackupAsync(string rootPath, bool deleteSource, IProgress<string>? progress = null)
+    public async Task<BackupResult> BackupAsync(string rootPath, bool deleteSource, IProgress<string>? progress = null,
+        IEnumerable<string>? selectedFolders = null)
     {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootPath));
         if (!Directory.Exists(root)) throw new DirectoryNotFoundException("対象フォルダが見つかりません: " + root);
@@ -27,8 +28,11 @@ public sealed class BackupService
         var programs = programsOverride ?? RequiredPrograms.FindForBackup(root);
         CheckPrograms(programs);
         // Snapshot before creating any temporary verification directory.
-        var folders = Directory.GetDirectories(root)
-            .Where(p => !Path.GetFileName(p).StartsWith(".backup_verify_", StringComparison.OrdinalIgnoreCase)).ToArray();
+        var folders = selectedFolders is null ? Directory.GetDirectories(root) :
+            selectedFolders.Select(p => Path.TrimEndingDirectorySeparator(Path.GetFullPath(p)))
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        foreach (var folder in folders) EnsureImmediateChild(root, folder);
+        folders = folders.Where(p => !Path.GetFileName(p).StartsWith(".backup_verify_", StringComparison.OrdinalIgnoreCase)).ToArray();
         var succeeded = 0;
         var skipped = 0;
         var failed = 0;
@@ -194,7 +198,7 @@ public sealed class BackupService
     {
         if (!string.Equals(Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(Path.GetFullPath(child))!),
             Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent)), StringComparison.OrdinalIgnoreCase))
-            throw new IOException("削除対象が指定フォルダの外にあります: " + child);
+            throw new IOException("対象が指定フォルダの直下にありません: " + child);
     }
 
     private static void CleanupTemporaryDirectory(string root, string temp, Action<string> log)

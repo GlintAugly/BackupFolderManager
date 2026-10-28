@@ -16,30 +16,30 @@
                 <Button x:Name="RemoveButton" DockPanel.Dock="Right" Content="登録解除" Padding="12,6" Margin="8,0,0,0" Click="Remove_Click"/>
                 <ListView x:Name="Roots" Height="110" SelectionMode="Extended">
                     <ListView.View><GridView>
-                        <GridViewColumn Header="登録した親フォルダ（バックアップは選択行が対象）" DisplayMemberBinding="{Binding Path}" Width="570"/>
+                        <GridViewColumn Header="登録した親フォルダ（一括アーカイブは選択行が対象）" DisplayMemberBinding="{Binding Path}" Width="570"/>
                         <GridViewColumn Header="状態" DisplayMemberBinding="{Binding Status}" Width="150"/>
                     </GridView></ListView.View>
                 </ListView>
             </DockPanel>
         </StackPanel>
         <StackPanel Grid.Row="1" Margin="0,0,0,12">
-            <TextBlock Text="指定した親フォルダ直下の各フォルダを .7z にバックアップします。Ctrl / Shift キーで複数行を選択できます。" TextWrapping="Wrap"/>
+            <TextBlock Text="上のボタンは選択した親フォルダ直下を一括アーカイブします。下のボタンは一覧で選択したフォルダだけを展開／圧縮します。" TextWrapping="Wrap"/>
             <WrapPanel Margin="0,10,0,0">
-                <Button x:Name="BackupButton" Content="選択フォルダをバックアップ" Padding="16,6" Click="Backup_Click"/>
+                <Button x:Name="BackupButton" Content="選択フォルダをアーカイブ" ToolTip="上の登録一覧で選択した親フォルダ直下が対象" Padding="16,6" Click="Backup_Click"/>
                 <CheckBox x:Name="DeleteSource" IsChecked="True" Content="検証後に元フォルダの中身を削除する" VerticalAlignment="Center" Margin="16,0"/>
                 <Button x:Name="RefreshButton" Content="一覧更新" Padding="16,6" Click="Refresh_Click"/>
             </WrapPanel>
         </StackPanel>
-        <ListView x:Name="Archives" Grid.Row="2" SelectionMode="Single">
+        <ListView x:Name="Folders" Grid.Row="2" SelectionMode="Extended">
             <ListView.View><GridView>
-                <GridViewColumn Header="アーカイブ (.7z / .zip)" DisplayMemberBinding="{Binding Name}" Width="280"/>
-                <GridViewColumn Header="保存フォルダ" DisplayMemberBinding="{Binding Parent}" Width="300"/>
-                <GridViewColumn Header="サイズ (MB)" DisplayMemberBinding="{Binding Size}" Width="110"/>
-                <GridViewColumn Header="更新日時" DisplayMemberBinding="{Binding Modified}" Width="180"/>
+                <GridViewColumn Header="フォルダ名" DisplayMemberBinding="{Binding Name}" Width="190"/>
+                <GridViewColumn Header="状態" DisplayMemberBinding="{Binding State}" Width="270"/>
+                <GridViewColumn Header="親フォルダ" DisplayMemberBinding="{Binding Parent}" Width="270"/>
+                <GridViewColumn Header="アーカイブ (.7z / .zip)" DisplayMemberBinding="{Binding Archives}" Width="230"/>
             </GridView></ListView.View>
         </ListView>
         <DockPanel Grid.Row="3" Margin="0,12">
-            <Button x:Name="ExtractButton" Content="選択したファイルを展開して開く" Padding="16,6" Click="Extract_Click" DockPanel.Dock="Left"/>
+            <Button x:Name="ExtractButton" Content="選択フォルダを展開／圧縮" ToolTip="下の一覧の選択行が対象。展開後はフォルダを開きます。" Padding="16,6" Click="Extract_Click" DockPanel.Dock="Left"/>
             <TextBlock x:Name="Status" Text="待機中" Margin="16,0" VerticalAlignment="Center"/>
         </DockPanel>
         <TextBox x:Name="Log" Grid.Row="4" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas"/>
