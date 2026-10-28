@@ -1,12 +1,47 @@
 ﻿<Window x:Class="BackupFolderManager.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-        xmlns:local="clr-namespace:BackupFolderManager"
-        mc:Ignorable="d"
-        Title="MainWindow" Height="450" Width="800">
-    <Grid>
-
+        Title="Backup Folder Manager" Height="800" Width="1060" MinHeight="650" MinWidth="850">
+    <Grid Margin="20">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="150"/>
+        </Grid.RowDefinitions>
+        <StackPanel Margin="0,0,0,12">
+            <DockPanel>
+                <Button x:Name="BrowseButton" DockPanel.Dock="Right" Content="フォルダ選択・追加" Padding="12,6" Click="Browse_Click"/>
+                <Button x:Name="AddButton" DockPanel.Dock="Right" Content="パスを追加" Padding="12,6" Margin="6,0" Click="Add_Click"/>
+                <TextBox x:Name="RootPath" VerticalContentAlignment="Center" ToolTip="未接続のドライブのパスも登録できます"/>
+            </DockPanel>
+            <DockPanel Margin="0,8,0,0">
+                <Button x:Name="RemoveButton" DockPanel.Dock="Right" Content="登録解除" Padding="12,6" Margin="8,0,0,0" Click="Remove_Click"/>
+                <ListView x:Name="Roots" Height="110" SelectionMode="Extended">
+                    <ListView.View><GridView>
+                        <GridViewColumn Header="登録した親フォルダ（バックアップは選択行が対象）" DisplayMemberBinding="{Binding Path}" Width="570"/>
+                        <GridViewColumn Header="状態" DisplayMemberBinding="{Binding Status}" Width="150"/>
+                    </GridView></ListView.View>
+                </ListView>
+            </DockPanel>
+        </StackPanel>
+        <StackPanel Grid.Row="1" Margin="0,0,0,12">
+            <TextBlock Text="指定した親フォルダ直下の各フォルダを .7z にバックアップします。Ctrl / Shift キーで複数行を選択できます。" TextWrapping="Wrap"/>
+            <WrapPanel Margin="0,10,0,0">
+                <Button x:Name="BackupButton" Content="選択フォルダをバックアップ" Padding="16,6" Click="Backup_Click"/>
+                <CheckBox x:Name="DeleteSource" IsChecked="True" Content="検証後に元フォルダの中身を削除する" VerticalAlignment="Center" Margin="16,0"/>
+                <Button x:Name="RefreshButton" Content="一覧更新" Padding="16,6" Click="Refresh_Click"/>
+            </WrapPanel>
+        </StackPanel>
+        <ListView x:Name="Archives" Grid.Row="2" SelectionMode="Single">
+            <ListView.View><GridView>
+                <GridViewColumn Header="アーカイブ (.7z / .zip)" DisplayMemberBinding="{Binding Name}" Width="280"/>
+                <GridViewColumn Header="保存フォルダ" DisplayMemberBinding="{Binding Parent}" Width="300"/>
+                <GridViewColumn Header="サイズ (MB)" DisplayMemberBinding="{Binding Size}" Width="110"/>
+                <GridViewColumn Header="更新日時" DisplayMemberBinding="{Binding Modified}" Width="180"/>
+            </GridView></ListView.View>
+        </ListView>
+        <DockPanel Grid.Row="3" Margin="0,12">
+            <Button x:Name="ExtractButton" Content="選択したファイルを展開して開く" Padding="16,6" Click="Extract_Click" DockPanel.Dock="Left"/>
+            <TextBlock x:Name="Status" Text="待機中" Margin="16,0" VerticalAlignment="Center"/>
+        </DockPanel>
+        <TextBox x:Name="Log" Grid.Row="4" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas"/>
     </Grid>
 </Window>

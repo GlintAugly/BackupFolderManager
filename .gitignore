@@ -57,3 +57,6 @@ TestResult.xml
 nunit-*.xml
 
 .vs
+# Portable application settings
+src/BackupFolderManager/settings.json
+src/BackupFolderManager/settings.json.tmp
