@@ -1,3 +1,7 @@
 <Solution>
   <Project Path="BackupFolderManager/BackupFolderManager.csproj" />
+  <Project Path="BackupFolderManager.Core/BackupFolderManager.Core.csproj" />
+  <Folder Name="/Tests/">
+    <Project Path="../tests/RestoreFiles.Checks/RestoreFiles.Checks.csproj" />
+  </Folder>
 </Solution>
