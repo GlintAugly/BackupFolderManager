@@ -8,6 +8,19 @@ public sealed record FolderItem(string Name, string FolderPath, string Parent, s
 
 public static class FolderCatalog
 {
+    // Called on demand from a worker thread, never as part of listing folders.
+    public static DateTime? GetLatestFileWriteTimeUtc(string folder)
+    {
+        RestoreFiles.ValidateTree(folder);
+        DateTime? latest = null;
+        foreach (var file in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
+        {
+            var time = File.GetLastWriteTimeUtc(file);
+            if (latest is null || time > latest.Value) latest = time;
+        }
+        return latest;
+    }
+
     // Inspect only immediate children: listing never hashes or recursively scans file contents.
     public static IReadOnlyList<FolderItem> Read(string parent)
     {

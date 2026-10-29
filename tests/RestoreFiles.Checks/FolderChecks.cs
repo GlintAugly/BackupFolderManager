@@ -31,6 +31,14 @@ internal static class FolderChecks
         check(items["Empty"].State == "空フォルダ", "Empty folder without archive is distinct from archived data");
         check(items["Conflict"].State == "同名ファイルと競合", "A restore destination occupied by a file is reported");
         check(FolderCatalog.Read(root).Single(f => f.Name == "Both").ArchivePaths.Count == 2, "Refreshing folder listing retains all archive choices");
+        var older = new DateTime(2020, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        var newer = older.AddDays(1);
+        File.SetLastWriteTimeUtc(Path.Combine(root, "Both", "data"), older);
+        Directory.CreateDirectory(Path.Combine(root, "Both", "nested"));
+        File.WriteAllText(Path.Combine(root, "Both", "nested", "new"), "new");
+        File.SetLastWriteTimeUtc(Path.Combine(root, "Both", "nested", "new"), newer);
+        check(FolderCatalog.GetLatestFileWriteTimeUtc(Path.Combine(root, "Both")) == newer, "Latest file timestamp includes nested files");
+        check(FolderCatalog.GetLatestFileWriteTimeUtc(Path.Combine(root, "Empty")) is null, "Empty folders have no latest file timestamp");
 
         var backupRoot = Path.Combine(testRoot, "selected-folder-backup");
         var selected = Path.Combine(backupRoot, "Selected");

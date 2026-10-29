@@ -20,7 +20,7 @@ public sealed class BackupService
     }
 
     public async Task<BackupResult> BackupAsync(string rootPath, bool deleteSource, IProgress<string>? progress = null,
-        IEnumerable<string>? selectedFolders = null)
+        IEnumerable<string>? selectedFolders = null, bool overwriteExisting = false)
     {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootPath));
         if (!Directory.Exists(root)) throw new DirectoryNotFoundException("対象フォルダが見つかりません: " + root);
@@ -53,20 +53,30 @@ public sealed class BackupService
                     log("SKIP: 空のフォルダです。");
                     continue;
                 }
-                CheckExistingOutputs(folder, archive, par);
+                if (!overwriteExisting) CheckExistingOutputs(folder, archive, par);
+                else
+                {
+                    // Build a fresh archive: updating an old archive could retain deleted files.
+                    Directory.CreateDirectory(temp);
+                    archive = Path.Combine(temp, Path.GetFileName(folder) + ".7z");
+                    par = Path.Combine(temp, Path.GetFileName(folder) + ".par2");
+                    log("再圧縮: 新しいアーカイブと回復データを検証してから既存出力を置き換えます。");
+                }
                 var before = GetInventory(folder);
+                var extraction = overwriteExisting ? Path.Combine(temp, "extracted") : temp;
 
                 // Keep the destructive step last. All verification failures exit via catch.
                 await CompressAsync(programs, root, folder, archive, log).ConfigureAwait(false);
                 await TestArchiveAsync(programs, root, archive, log).ConfigureAwait(false);
-                await ExtractForVerificationAsync(programs, root, archive, temp, log).ConfigureAwait(false);
-                VerifyInventory(before, Path.Combine(temp, Path.GetFileName(folder)), "展開内容が元データと一致しません。");
+                await ExtractForVerificationAsync(programs, root, archive, extraction, log).ConfigureAwait(false);
+                VerifyInventory(before, Path.Combine(extraction, Path.GetFileName(folder)), "展開内容が元データと一致しません。");
                 VerifyInventory(before, folder, "処理中に元データが変更されました。");
                 var hash = await WriteArchiveHashAsync(archive).ConfigureAwait(false);
                 await CreateRecoveryAsync(programs, root, archive, par, log).ConfigureAwait(false);
                 await VerifyRecoveryAsync(programs, root, par, log).ConfigureAwait(false);
                 await VerifyArchiveHashAsync(archive, hash).ConfigureAwait(false);
                 VerifyInventory(before, folder, "削除前の再確認で元データの変更を検出しました。");
+                if (overwriteExisting) PublishReplacement(root, folder, temp, log);
                 if (deleteSource)
                 {
                     deleting = true;
@@ -99,6 +109,64 @@ public sealed class BackupService
             Directory.EnumerateFiles(Path.GetDirectoryName(folder)!).Any(p =>
                 Path.GetFileName(p).StartsWith(prefix, StringComparison.OrdinalIgnoreCase) && p.EndsWith(".par2", StringComparison.OrdinalIgnoreCase)))
             throw new IOException("既存の出力があるため、上書きしません。");
+    }
+
+    private static string[] OutputFiles(string directory, string name) =>
+        Directory.EnumerateFiles(directory).Where(p =>
+        {
+            var file = Path.GetFileName(p);
+            return file.Equals(name + ".7z", StringComparison.OrdinalIgnoreCase) ||
+                file.Equals(name + ".7z.sha256", StringComparison.OrdinalIgnoreCase) ||
+                file.Equals(name + ".par2", StringComparison.OrdinalIgnoreCase) ||
+                (file.StartsWith(name + ".vol", StringComparison.OrdinalIgnoreCase) && file.EndsWith(".par2", StringComparison.OrdinalIgnoreCase));
+        }).ToArray();
+
+    private static void PublishReplacement(string root, string folder, string staging, Action<string> log)
+    {
+        var name = Path.GetFileName(folder);
+        var oldFiles = OutputFiles(root, name);
+        var newFiles = OutputFiles(staging, name);
+        foreach (var file in oldFiles.Concat(newFiles)) RejectLink(file);
+        // A separate directory survives staging cleanup if rollback cannot complete.
+        var previous = Path.Combine(root, ".backup_verify_previous_" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(previous);
+        var saved = new List<string>();
+        var published = new List<string>();
+        try
+        {
+            foreach (var file in oldFiles)
+            {
+                File.Move(file, Path.Combine(previous, Path.GetFileName(file)));
+                saved.Add(file);
+            }
+            foreach (var file in newFiles)
+            {
+                var destination = Path.Combine(root, Path.GetFileName(file));
+                File.Move(file, destination);
+                published.Add(destination);
+            }
+        }
+        catch (Exception publishError)
+        {
+            var rollbackErrors = new List<Exception>();
+            foreach (var file in published.AsEnumerable().Reverse())
+            {
+                try { File.Move(file, Path.Combine(staging, Path.GetFileName(file))); }
+                catch (Exception ex) { rollbackErrors.Add(ex); }
+            }
+            foreach (var file in saved.AsEnumerable().Reverse())
+            {
+                try { File.Move(Path.Combine(previous, Path.GetFileName(file)), file); }
+                catch (Exception ex) { rollbackErrors.Add(ex); }
+            }
+            if (rollbackErrors.Count > 0)
+                throw new IOException("出力の置換と復元に失敗しました。旧ファイルの退避先を確認してください: " + previous,
+                    new AggregateException(new[] { publishError }.Concat(rollbackErrors)));
+            CleanupTemporaryDirectory(root, previous, log);
+            throw;
+        }
+        CleanupTemporaryDirectory(root, previous, log);
+        log("置換完了: " + folder + ".7z（SHA256・PAR2 も更新）");
     }
 
     private Task CompressAsync(BackupPrograms programs, string root, string folder, string archive, Action<string> log) =>
