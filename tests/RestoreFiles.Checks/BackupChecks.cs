@@ -104,6 +104,66 @@ internal static class BackupChecks
         catch (FileNotFoundException) { dependencyRejected = true; }
         check(dependencyRejected, "Process launcher rechecks executable existence");
 
+        foreach (var scenario in new[] { "replace-keep", "replace-delete", "fail-a", "fail-t", "fail-x", "fail-c", "fail-v", "bad-content", "source-change", "publish-collision" })
+        {
+            var root = Path.Combine(testRoot, "replacement-" + scenario);
+            var source = Path.Combine(root, "Game");
+            Directory.CreateDirectory(source);
+            var data = Path.Combine(source, "updated.dat");
+            File.WriteAllText(data, "updated data");
+            var old = new Dictionary<string, string>
+            {
+                [source + ".7z"] = "old archive",
+                [source + ".7z.sha256"] = "old hash",
+                [source + ".vol00+01.par2"] = "old recovery volume"
+            };
+            if (scenario != "publish-collision") old[source + ".par2"] = "old recovery index";
+            foreach (var item in old) File.WriteAllText(item.Key, item.Value);
+            if (scenario == "publish-collision") Directory.CreateDirectory(source + ".par2");
+            File.WriteAllText(source + ".zip", "unrelated zip");
+            var service = new BackupService(tools, (_, arguments, working, _) =>
+            {
+                var command = arguments[0];
+                if (scenario == "fail-" + command) throw new IOException("Injected failure");
+                if (command == "a")
+                {
+                    var output = arguments[^2];
+                    check(working == root && output != source + ".7z" && !File.Exists(output), "Replacement is built fresh beside the source without modifying the old archive");
+                    File.WriteAllText(output, "new archive");
+                }
+                if (command == "x")
+                {
+                    var output = Path.Combine(arguments.Single(a => a.StartsWith("-o"))[2..], "Game");
+                    RestoreFiles.CopyInto(source, output);
+                    if (scenario == "bad-content") File.WriteAllText(Path.Combine(output, "updated.dat"), "bad");
+                }
+                if (command == "c")
+                {
+                    File.WriteAllText(arguments[2], "new recovery index");
+                    File.WriteAllText(Path.Combine(Path.GetDirectoryName(arguments[2])!, "Game.vol00+02.par2"), "new volume");
+                }
+                if (command == "v")
+                {
+                    check(old.All(item => File.ReadAllText(item.Key) == item.Value), "Old output set remains untouched through recovery verification");
+                    if (scenario == "source-change") File.WriteAllText(data, "changed during verification");
+                }
+                return Task.CompletedTask;
+            });
+            var result = await service.BackupAsync(root, scenario == "replace-delete", selectedFolders: [source], overwriteExisting: true);
+            if (scenario.StartsWith("replace-"))
+            {
+                check(result == new BackupResult(1, 0, 0) && File.ReadAllText(source + ".7z") == "new archive" && File.ReadAllText(source + ".par2") == "new recovery index", scenario + ": verified outputs replace old outputs");
+                check(!File.Exists(source + ".vol00+01.par2") && File.Exists(source + ".vol00+02.par2"), "Replacement removes stale recovery volumes and publishes new volumes");
+                var hash = Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(source + ".7z"))).ToLowerInvariant();
+                check(File.ReadAllText(source + ".7z.sha256") == hash + " *Game.7z\n", "Replacement SHA256 references the final archive name");
+                check(File.Exists(data) == (scenario == "replace-keep"), "Replacement respects source retention after publication");
+            }
+            else
+                check(result.Failed == 1 && File.Exists(data) && old.All(item => File.ReadAllText(item.Key) == item.Value), scenario + ": failure preserves or restores the entire old output set and source");
+            check(File.ReadAllText(source + ".zip") == "unrelated zip", "Replacement leaves existing ZIP untouched");
+            check(!Directory.EnumerateDirectories(root).Any(p => Path.GetFileName(p).StartsWith(".backup_verify_")), scenario + ": replacement temporary directories are cleaned");
+        }
+
         // Exercise the production backup pipeline with real 7-Zip; PAR2 is simulated if not installed.
         string seven;
         try { seven = RequiredPrograms.FindSevenZip(); }
@@ -123,6 +183,12 @@ internal static class BackupChecks
         });
         var integrationResult = await integrationService.BackupAsync(integrationRoot, true);
         check(integrationResult == new BackupResult(1, 0, 0) && Directory.Exists(integrationSource) && !Directory.EnumerateFileSystemEntries(integrationSource).Any(), "C# backup pipeline verifies a real 7-Zip roundtrip before deleting source data (PAR2 simulated)");
+        File.WriteAllText(Path.Combine(integrationSource, "new.dat"), "updated roundtrip");
+        integrationResult = await integrationService.BackupAsync(integrationRoot, false, selectedFolders: [integrationSource], overwriteExisting: true);
+        var restored = Path.Combine(testRoot, "replacement-roundtrip");
+        await ProgramRunner.RunAsync(seven, ["x", "-y", "-o" + restored, "--", integrationSource + ".7z"], integrationRoot, null);
+        var restoredSource = Path.Combine(restored, Path.GetFileName(integrationSource));
+        check(integrationResult == new BackupResult(1, 0, 0) && File.Exists(Path.Combine(restoredSource, "new.dat")) && !File.Exists(Path.Combine(restoredSource, "save.dat")), "Real 7-Zip replacement includes updated files and omits deleted files");
     }
 
     private sealed class InlineProgress : IProgress<string>

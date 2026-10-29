@@ -174,9 +174,9 @@ public partial class MainWindow : Window
         finally { SetBusy(false); }
     }
 
-    private async Task<bool> ArchiveFoldersAsync(FolderItem[] selected, IReadOnlyList<string>? confirmationParents = null)
+    private async Task<bool> ArchiveFoldersAsync(FolderItem[] selected, IReadOnlyList<string>? confirmationParents = null, bool overwriteExisting = false)
     {
-        var available = selected.Where(f => f.HasData && f.ArchivePaths.Count == 0).ToArray();
+        var available = selected.Where(f => f.HasData && (overwriteExisting || f.ArchivePaths.Count == 0)).ToArray();
         if (available.Length == 0) throw new InvalidOperationException("アーカイブできるフォルダがありません。データがあり、同名アーカイブがないフォルダを選択してください。既存アーカイブは上書きしません。");
         if (DeleteSource.IsChecked == true && MessageBox.Show(this,
             "検証に成功した各フォルダの中身を削除します。実行しますか？\n" +
@@ -194,7 +194,7 @@ public partial class MainWindow : Window
             {
                 AppendLog("保存先: " + group.Key);
                 var targets = group.Select(f => f.FolderPath).ToArray();
-                var result = await Task.Run(() => backup.BackupAsync(group.Key, deleteSource, progress, targets));
+                var result = await Task.Run(() => backup.BackupAsync(group.Key, deleteSource, progress, targets, overwriteExisting));
                 failed |= result.Failed > 0;
                 AppendLog($"成功: {result.Succeeded} / スキップ: {result.Skipped} / 失敗: {result.Failed}");
             }
@@ -218,13 +218,15 @@ public partial class MainWindow : Window
             {
                 try
                 {
-                    var operation = ChooseFolderOperation(folder);
+                    var operation = await ChooseFolderOperationAsync(folder);
                     if (operation == FolderOperation.Skip)
                     {
                         skipped++;
                         AppendLog("スキップ: " + folder.FolderPath);
                     }
-                    else if (operation == FolderOperation.Archive ? await ArchiveFoldersAsync([folder]) : await ExtractFolderAsync(folder)) completed++;
+                    else if (operation is FolderOperation.Archive or FolderOperation.ReplaceArchive
+                        ? await ArchiveFoldersAsync([folder], overwriteExisting: operation == FolderOperation.ReplaceArchive)
+                        : await ExtractFolderAsync(folder)) completed++;
                     else skipped++;
                 }
                 catch (Exception ex) { failed++; AppendLog(folder.FolderPath + ": " + ex.Message); }
@@ -236,22 +238,31 @@ public partial class MainWindow : Window
         finally { SetBusy(false); }
     }
 
-    private enum FolderOperation { Skip, Archive, Extract }
+    private enum FolderOperation { Skip, Archive, ReplaceArchive, Extract }
 
-    private FolderOperation ChooseFolderOperation(FolderItem folder)
+    private async Task<FolderOperation> ChooseFolderOperationAsync(FolderItem folder)
     {
         if (folder.ArchivePaths.Count == 0) return folder.HasData ? FolderOperation.Archive : FolderOperation.Skip;
         if (!folder.HasData) return FolderOperation.Extract;
+        Status.Text = "更新日時を確認中...";
+        var latest = await Task.Run(() => FolderCatalog.GetLatestFileWriteTimeUtc(folder.FolderPath));
+        var archive = folder.FolderPath + ".7z";
+        var archiveTime = File.Exists(archive) ? File.GetLastWriteTimeUtc(archive) : (DateTime?)null;
+        var timestamps = "展開ファイルの最新更新日時: " + (latest?.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss") ?? "ファイルなし") + "\n" +
+            (archiveTime is { } time
+                ? "既存 .7z の更新日時: " + time.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss") + "\n" +
+                    (latest > time ? "展開ファイルに .7z より新しい更新日時があります。" : "日時だけでは変更の有無を判断できません。")
+                : "同名 .7z を新規作成します。既存の ZIP は保持します。");
+        Status.Text = "操作を選択してください";
         var result = FolderOperation.Skip;
         var dialog = new Window { Owner = this, Title = "フォルダの操作を選択", Width = 600, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize };
         var panel = new StackPanel { Margin = new Thickness(20) };
-        panel.Children.Add(new TextBlock { Text = folder.FolderPath + "\n展開データとアーカイブの両方があります。操作を選択してください。\n圧縮時は既存アーカイブを上書きしません。", TextWrapping = TextWrapping.Wrap });
+        panel.Children.Add(new TextBlock { Text = folder.FolderPath + "\n展開データとアーカイブの両方があります。操作を選択してください。\n\n" + timestamps +
+            "\n\n再圧縮は現在の展開内容から作り直し、検証後に同名 .7z・SHA256・PAR2 を置き換えます。\n日時は目安です。削除・改名や日時を保持した変更は検出できません。", TextWrapping = TextWrapping.Wrap });
         var buttons = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) };
-        foreach (var (label, operation) in new[] { ("展開・同一性チェック", FolderOperation.Extract), ("圧縮", FolderOperation.Archive), ("何もしない", FolderOperation.Skip) })
+        foreach (var (label, operation) in new[] { ("展開・同一性チェック", FolderOperation.Extract), ("再圧縮（.7z を置換）", FolderOperation.ReplaceArchive), ("何もしない", FolderOperation.Skip) })
         {
-            var button = new Button { Content = label, Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(0, 0, 8, 0), IsCancel = operation == FolderOperation.Skip,
-                IsEnabled = operation != FolderOperation.Archive || folder.ArchivePaths.Count == 0,
-                ToolTip = operation == FolderOperation.Archive ? "既存の同名アーカイブがあるため、圧縮はできません。" : null };
+            var button = new Button { Content = label, Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(0, 0, 8, 0), IsCancel = operation == FolderOperation.Skip };
             button.Click += (_, _) => { result = operation; dialog.Close(); };
             buttons.Children.Add(button);
         }
