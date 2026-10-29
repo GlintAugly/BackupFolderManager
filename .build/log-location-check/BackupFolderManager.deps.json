@@ -1,0 +1,39 @@
+{
+  "runtimeTarget": {
+    "name": ".NETCoreApp,Version=v10.0",
+    "signature": ""
+  },
+  "compilationOptions": {},
+  "targets": {
+    ".NETCoreApp,Version=v10.0": {
+      "BackupFolderManager/1.0.0": {
+        "dependencies": {
+          "BackupFolderManager.Core": "1.0.0"
+        },
+        "runtime": {
+          "BackupFolderManager.dll": {}
+        }
+      },
+      "BackupFolderManager.Core/1.0.0": {
+        "runtime": {
+          "BackupFolderManager.Core.dll": {
+            "assemblyVersion": "1.0.0.0",
+            "fileVersion": "1.0.0.0"
+          }
+        }
+      }
+    }
+  },
+  "libraries": {
+    "BackupFolderManager/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    },
+    "BackupFolderManager.Core/1.0.0": {
+      "type": "project",
+      "serviceable": false,
+      "sha512": ""
+    }
+  }
+}

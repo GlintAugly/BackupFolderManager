@@ -88,6 +88,7 @@ try
         Check(RestoreFiles.AreIdentical(content, restored), "Real 7-Zip archive restores original files and empty directories without nesting");
     }
     await BackupChecks.RunAsync(root, Check);
+    await FolderChecks.RunAsync(root, Check);
     Console.WriteLine($"{checks} checks passed.");
 }
 finally
