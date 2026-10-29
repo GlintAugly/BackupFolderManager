@@ -2,8 +2,10 @@
 using System.Diagnostics;
 using System.IO;
 using System.Security.Cryptography;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 using Microsoft.Win32;
 
 namespace BackupFolderManager;
@@ -15,10 +17,46 @@ public partial class MainWindow : Window
     private readonly ObservableCollection<RootItem> roots = new();
     private readonly FolderSettings settings = new();
     private readonly BackupService backup = new();
+    private const int MaxLogCharacters = 64 * 1024;
+    private readonly object logGate = new();
+    private readonly StringBuilder pendingLog = new();
+    private readonly DispatcherTimer logTimer;
+    private StreamWriter? logFile;
+
+    // Unlike Progress<T>, this does not post one Dispatcher operation per line.
+    private sealed class LogProgress(Action<string> report) : IProgress<string>
+    {
+        public void Report(string value) => report(value);
+    }
 
     public MainWindow()
     {
         InitializeComponent();
+        logTimer = new DispatcherTimer(DispatcherPriority.Background, Dispatcher)
+        {
+            Interval = TimeSpan.FromMilliseconds(250)
+        };
+        logTimer.Tick += (_, _) => FlushLog();
+        logTimer.Start();
+        try
+        {
+            var directory = Path.Combine(AppContext.BaseDirectory, "logs");
+            Directory.CreateDirectory(directory);
+            var path = Path.Combine(directory, $"{DateTime.Now:yyyyMMdd-HHmmss}-{Guid.NewGuid():N}.log");
+            logFile = new StreamWriter(path, append: false, Encoding.UTF8);
+            AppendLog("ログ保存先: " + path);
+            Log.ToolTip = "画面には最新64K文字を表示します。完全なログの保存先: " + path;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            AppendLog("ログファイルを作成できません（画面表示のみ）: " + ex.Message);
+        }
+        Closed += (_, _) =>
+        {
+            logTimer.Stop();
+            FlushLog();
+            lock (logGate) { logFile?.Dispose(); logFile = null; }
+        };
         Roots.ItemsSource = roots;
         Loaded += (_, _) => LoadFolders();
         Closing += (_, e) =>
@@ -148,7 +186,7 @@ public partial class MainWindow : Window
             "元データの削除確認", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return false;
         var failed = false;
         var deleteSource = DeleteSource.IsChecked == true;
-        var progress = new Progress<string>(AppendLog);
+        var progress = new LogProgress(AppendLog);
         foreach (var skipped in selected.Where(f => !available.Contains(f))) AppendLog("アーカイブ対象外のためスキップ: " + skipped.FolderPath + " / " + skipped.State);
         foreach (var group in available.GroupBy(f => f.Parent, StringComparer.OrdinalIgnoreCase))
         {
@@ -322,16 +360,66 @@ public partial class MainWindow : Window
 
     private async Task RunAsync(string executable, IEnumerable<string> arguments)
     {
-        IProgress<string> progress = new Progress<string>(AppendLog);
+        IProgress<string> progress = new LogProgress(AppendLog);
         await ProgramRunner.RunAsync(executable, arguments.ToArray(), AppContext.BaseDirectory, progress.Report);
     }
 
-    private void AppendLog(string message) { Log.AppendText(message + Environment.NewLine); Log.ScrollToEnd(); }
+    private void AppendLog(string message)
+    {
+        lock (logGate)
+        {
+            try { logFile?.WriteLine(message); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                try { logFile?.Dispose(); } catch (IOException) { }
+                logFile = null;
+                BufferLog("ログファイルへの保存に失敗しました（以降は画面表示のみ）: " + ex.Message);
+            }
+            BufferLog(message);
+        }
+    }
+
+    // Keep the pending display buffer bounded even when the UI cannot keep up.
+    private void BufferLog(string message)
+    {
+        if (message.Length > MaxLogCharacters) message = message[^MaxLogCharacters..];
+        pendingLog.Append(message).AppendLine();
+        if (pendingLog.Length > MaxLogCharacters)
+            pendingLog.Remove(0, pendingLog.Length - MaxLogCharacters);
+    }
+
+    private void FlushLog()
+    {
+        string text;
+        lock (logGate)
+        {
+            try { logFile?.Flush(); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                try { logFile?.Dispose(); } catch (IOException) { }
+                logFile = null;
+                BufferLog("ログファイルへの保存に失敗しました（以降は画面表示のみ）: " + ex.Message);
+            }
+            if (pendingLog.Length == 0) return;
+            text = pendingLog.ToString();
+            pendingLog.Clear();
+        }
+        var retained = Log.Text;
+        var keep = Math.Min(retained.Length, MaxLogCharacters - text.Length);
+        Log.Text = retained[(retained.Length - keep)..] + text;
+        Log.ScrollToEnd();
+    }
     private void ShowError(Exception ex) { Status.Text = "エラー"; AppendLog(ex.Message); MessageBox.Show(this, ex.Message, "エラー", MessageBoxButton.OK, MessageBoxImage.Error); }
     private void SetBusy(bool value)
     {
         busy = value;
         BrowseButton.IsEnabled = BackupButton.IsEnabled = RefreshButton.IsEnabled = ExtractButton.IsEnabled = RootPath.IsEnabled = DeleteSource.IsEnabled = Roots.IsEnabled = Folders.IsEnabled = AddButton.IsEnabled = RemoveButton.IsEnabled = !value;
-        if (value) { Log.Clear(); Status.Text = "処理中..."; }
+        if (value)
+        {
+            FlushLog();
+            Log.Clear();
+            Status.Text = "処理中...";
+        }
+        else FlushLog();
     }
 }

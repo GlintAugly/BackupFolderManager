@@ -42,6 +42,6 @@
             <Button x:Name="ExtractButton" Content="選択フォルダを展開／圧縮" ToolTip="下の一覧の選択行が対象。展開後はフォルダを開きます。" Padding="16,6" Click="Extract_Click" DockPanel.Dock="Left"/>
             <TextBlock x:Name="Status" Text="待機中" Margin="16,0" VerticalAlignment="Center"/>
         </DockPanel>
-        <TextBox x:Name="Log" Grid.Row="4" IsReadOnly="True" AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas"/>
+        <TextBox x:Name="Log" Grid.Row="4" IsReadOnly="True" IsUndoEnabled="False" AcceptsReturn="True" TextWrapping="NoWrap" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas"/>
     </Grid>
 </Window>
