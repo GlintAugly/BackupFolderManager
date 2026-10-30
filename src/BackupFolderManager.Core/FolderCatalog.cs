@@ -21,10 +21,27 @@ public static class FolderCatalog
         return latest;
     }
 
-    // Inspect only immediate children: listing never hashes or recursively scans file contents.
-    public static IReadOnlyList<FolderItem> Read(string parent)
+    // Only list the chosen level; never hash or scan file contents here.
+    public static IReadOnlyList<FolderItem> Read(string parent, int targetDepth = 1, Action<string>? log = null)
     {
+        if (targetDepth is not (1 or 2)) throw new ArgumentOutOfRangeException(nameof(targetDepth));
         parent = Path.TrimEndingDirectorySeparator(Path.GetFullPath(parent));
+        if ((File.GetAttributes(parent) & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("リンク・ジャンクションは一覧の対象にできません: " + parent);
+        if (targetDepth == 2)
+        {
+            var grandchildren = new List<FolderItem>();
+            foreach (var child in Directory.EnumerateDirectories(parent))
+            {
+                if (Path.GetFileName(child).StartsWith(".backup_verify_", StringComparison.OrdinalIgnoreCase)) continue;
+                try { grandchildren.AddRange(Read(child)); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    log?.Invoke("孫フォルダの取得をスキップ: " + child + ": " + ex.Message);
+                }
+            }
+            return grandchildren;
+        }
         var folders = Directory.EnumerateDirectories(parent).ToDictionary(p => Path.GetFileName(p), p => p, StringComparer.OrdinalIgnoreCase);
         var archives = Directory.EnumerateFiles(parent)
             .Where(p => Path.GetExtension(p).Equals(".7z", StringComparison.OrdinalIgnoreCase) || Path.GetExtension(p).Equals(".zip", StringComparison.OrdinalIgnoreCase))

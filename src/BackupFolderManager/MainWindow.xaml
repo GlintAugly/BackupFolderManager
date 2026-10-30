@@ -12,20 +12,30 @@
                 <Button x:Name="AddButton" DockPanel.Dock="Right" Content="パスを追加" Padding="12,6" Margin="6,0" Click="Add_Click"/>
                 <TextBox x:Name="RootPath" VerticalContentAlignment="Center" ToolTip="未接続のドライブのパスも登録できます"/>
             </DockPanel>
+            <WrapPanel Margin="0,8,0,0">
+                <TextBlock Text="圧縮対象の階層:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <ComboBox x:Name="TargetDepth" SelectedIndex="0" Width="160" VerticalContentAlignment="Center">
+                    <ComboBoxItem Content="直下のフォルダ"/>
+                    <ComboBoxItem Content="孫フォルダ"/>
+                </ComboBox>
+                <Button x:Name="ApplyDepthButton" Content="選択した登録に適用" Padding="12,6" Margin="8,0" Click="ApplyDepth_Click"/>
+                <TextBlock Text="新規登録にもこの階層を使用します" VerticalAlignment="Center"/>
+            </WrapPanel>
             <DockPanel Margin="0,8,0,0">
                 <Button x:Name="RemoveButton" DockPanel.Dock="Right" Content="登録解除" Padding="12,6" Margin="8,0,0,0" Click="Remove_Click"/>
                 <ListView x:Name="Roots" Height="110" SelectionMode="Extended">
                     <ListView.View><GridView>
-                        <GridViewColumn Header="登録した親フォルダ（一括アーカイブは選択行が対象）" DisplayMemberBinding="{Binding Path}" Width="570"/>
+                        <GridViewColumn Header="登録した親フォルダ（一括アーカイブは選択行が対象）" DisplayMemberBinding="{Binding Path}" Width="450"/>
+                        <GridViewColumn Header="対象階層" DisplayMemberBinding="{Binding TargetDescription}" Width="120"/>
                         <GridViewColumn Header="状態" DisplayMemberBinding="{Binding Status}" Width="150"/>
                     </GridView></ListView.View>
                 </ListView>
             </DockPanel>
         </StackPanel>
         <StackPanel Grid.Row="1" Margin="0,0,0,12">
-            <TextBlock Text="上のボタンは選択した親フォルダ直下を一括アーカイブします。下のボタンは一覧で選択したフォルダだけを展開／圧縮します。" TextWrapping="Wrap"/>
+            <TextBlock Text="上のボタンは登録ごとの対象階層で一括アーカイブします。保存先は各対象フォルダの隣です。下のボタンは一覧の選択行を展開／圧縮します。" TextWrapping="Wrap"/>
             <WrapPanel Margin="0,10,0,0">
-                <Button x:Name="BackupButton" Content="選択フォルダをアーカイブ" ToolTip="上の登録一覧で選択した親フォルダ直下が対象" Padding="16,6" Click="Backup_Click"/>
+                <Button x:Name="BackupButton" Content="選択フォルダをアーカイブ" ToolTip="上の登録一覧の選択行を、設定した対象階層で処理します" Padding="16,6" Click="Backup_Click"/>
                 <CheckBox x:Name="DeleteSource" IsChecked="True" Content="検証後に元フォルダの中身を削除する" VerticalAlignment="Center" Margin="16,0"/>
                 <Button x:Name="RefreshButton" Content="一覧更新" Padding="16,6" Click="Refresh_Click"/>
             </WrapPanel>

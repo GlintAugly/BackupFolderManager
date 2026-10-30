@@ -20,6 +20,16 @@ internal static class BackupChecks
         try { new FolderSettings(Path.Combine(testRoot, "missing-settings-dir", "settings.json")).Save([disconnected]); }
         catch (IOException ex) { saveFailed = ex.Message.Contains("settings.json"); }
         check(saveFailed, "Settings save errors identify the failed file");
+        var depthSettings = new FolderSettings(Path.Combine(testRoot, "depth-settings.json"));
+        depthSettings.SaveRegistrations([new FolderRegistration(disconnected, 2), new FolderRegistration(testRoot)]);
+        check(depthSettings.LoadRegistrations().SequenceEqual(new[] { new FolderRegistration(disconnected, 2), new FolderRegistration(testRoot, 1) }), "Target depth is saved per registration, including disconnected paths");
+        File.WriteAllText(depthSettings.FilePath, System.Text.Json.JsonSerializer.Serialize(new[] { disconnected }));
+        check(depthSettings.LoadRegistrations().Single() == new FolderRegistration(disconnected, 1), "Old path-only settings default to immediate children");
+        var previousSettings = File.ReadAllText(depthSettings.FilePath);
+        var depthRejected = false;
+        try { depthSettings.SaveRegistrations([new FolderRegistration(testRoot, 3)]); }
+        catch (ArgumentException) { depthRejected = true; }
+        check(depthRejected && File.ReadAllText(depthSettings.FilePath) == previousSettings, "Unsupported target depth is rejected without changing settings");
 
         var tools = new BackupPrograms(Path.Combine(testRoot, "fake-7z.exe"), Path.Combine(testRoot, "fake-par2.exe"));
         File.WriteAllText(tools.SevenZip, "fake tool used only by injected runner");

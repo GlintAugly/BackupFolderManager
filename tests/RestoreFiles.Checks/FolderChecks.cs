@@ -81,5 +81,67 @@ internal static class FolderChecks
         try { await service.BackupAsync(backupRoot, true, selectedFolders: [nested]); }
         catch (IOException) { rejected = true; }
         check(rejected && calls == 0, "A nested selection is rejected to preserve the parent/folder layout");
+
+        var grandparent = Path.Combine(testRoot, "grandchildren");
+        foreach (var relative in new[] { "childA/grandchildA", "childA/grandchildB", "childB/grandchildC", "childB/grandchildD", "childB/grandchildE" })
+        {
+            var folder = Path.Combine(grandparent, relative);
+            Directory.CreateDirectory(Path.Combine(folder, "deeper"));
+            File.WriteAllText(Path.Combine(folder, "deeper", "data"), relative);
+        }
+        File.WriteAllText(Path.Combine(grandparent, "childA", "keep.txt"), "child-level data");
+        File.WriteAllText(Path.Combine(grandparent, "keep.txt"), "root-level data");
+        Directory.CreateDirectory(Path.Combine(grandparent, ".backup_verify_hidden", "ignored"));
+        File.WriteAllText(Path.Combine(grandparent, "childA", "ArchiveOnly.7z"), "existing archive");
+        var grandchildren = FolderCatalog.Read(grandparent, 2);
+        check(grandchildren.Count == 6 && grandchildren.Count(f => f.HasData) == 5, "Grandchild listing contains five targets plus an archive-only restore row");
+        check(grandchildren.All(f => Path.GetDirectoryName(f.Parent) == grandparent) && !grandchildren.Any(f => f.Name == "deeper"), "Grandchild mode selects exactly depth two and retains actual archive parent paths");
+        check(FolderCatalog.Read(grandparent).Select(f => f.Name).Order().SequenceEqual(new[] { "childA", "childB" }), "Default listing still selects only immediate children");
+        var grandService = new BackupService(tools, (_, arguments, working, _) =>
+        {
+            if (arguments[0] == "a")
+            {
+                var archive = arguments[^2];
+                check(Path.GetDirectoryName(archive) == working && Path.GetDirectoryName(working) == grandparent, "Grandchild archives are written inside their respective child directories");
+                File.WriteAllText(archive, "archive");
+            }
+            if (arguments[0] == "x")
+            {
+                var source = arguments[^1][..^3];
+                RestoreFiles.CopyInto(source, Path.Combine(arguments.Single(a => a.StartsWith("-o"))[2..], Path.GetFileName(source)));
+            }
+            if (arguments[0] == "c") File.WriteAllText(arguments[2], "recovery");
+            return Task.CompletedTask;
+        });
+        var grandSucceeded = 0;
+        foreach (var group in grandchildren.Where(f => f.HasData && f.ArchivePaths.Count == 0).GroupBy(f => f.Parent))
+        {
+            var grandResult = await grandService.BackupAsync(group.Key, true, selectedFolders: group.Select(f => f.FolderPath));
+            grandSucceeded += grandResult.Succeeded;
+        }
+        check(grandSucceeded == 5 && grandchildren.Where(f => f.HasData).All(f => File.Exists(f.FolderPath + ".7z") && !Directory.EnumerateFileSystemEntries(f.FolderPath).Any()), "All five grandchildren are archived and only verified grandchild contents are deleted");
+        check(File.ReadAllText(Path.Combine(grandparent, "childA", "keep.txt")) == "child-level data" && File.ReadAllText(Path.Combine(grandparent, "keep.txt")) == "root-level data", "Grandchild compression preserves child-level and root-level files");
+        check(!File.Exists(Path.Combine(grandparent, "childA.7z")) && !File.Exists(Path.Combine(grandparent, "childB.7z")), "Grandchild mode never archives the child containers themselves");
+        check(FolderCatalog.Read(grandparent, 2).Count(f => f.State == "アーカイブ済み") == 5, "Grandchild listing reflects archived state after backup");
+        var invalidDepthRejected = false;
+        try { FolderCatalog.Read(grandparent, 3); }
+        catch (ArgumentOutOfRangeException) { invalidDepthRejected = true; }
+        check(invalidDepthRejected, "Listing rejects unsupported depths");
+        if (OperatingSystem.IsWindows())
+        {
+            var link = Path.Combine(grandparent, "linked-child");
+            var start = new System.Diagnostics.ProcessStartInfo("cmd.exe") { UseShellExecute = false, RedirectStandardOutput = true, RedirectStandardError = true, CreateNoWindow = true };
+            foreach (var argument in new[] { "/c", "mklink", "/J", link, Path.Combine(grandparent, "childA") }) start.ArgumentList.Add(argument);
+            using var process = System.Diagnostics.Process.Start(start)!;
+            await process.WaitForExitAsync();
+            if (process.ExitCode != 0) throw new Exception("Could not create grandchild-mode junction test.");
+            try
+            {
+                var messages = new List<string>();
+                var linkedItems = FolderCatalog.Read(grandparent, 2, messages.Add);
+                check(linkedItems.Count == 6 && messages.Count == 1, "Grandchild listing skips and reports linked child containers without following them");
+            }
+            finally { Directory.Delete(link); }
+        }
     }
 }
