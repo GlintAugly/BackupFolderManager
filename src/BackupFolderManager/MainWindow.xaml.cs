@@ -13,7 +13,10 @@ namespace BackupFolderManager;
 public partial class MainWindow : Window
 {
     private bool busy;
-    private sealed record RootItem(string Path, string Status);
+    private sealed record RootItem(string Path, string Status, int TargetDepth = 1)
+    {
+        public string TargetDescription => TargetDepth == 2 ? "孫フォルダ" : "直下のフォルダ";
+    }
     private readonly ObservableCollection<RootItem> roots = new();
     private readonly FolderSettings settings = new();
     private readonly BackupService backup = new();
@@ -71,8 +74,8 @@ public partial class MainWindow : Window
     {
         try
         {
-            foreach (var path in settings.Load())
-                roots.Add(new RootItem(path, "未確認"));
+            foreach (var registration in settings.LoadRegistrations())
+                roots.Add(new RootItem(registration.Path, "未確認", registration.TargetDepth));
             RefreshFolders();
             Roots.SelectAll();
         }
@@ -81,7 +84,7 @@ public partial class MainWindow : Window
 
     private void SaveFolders()
     {
-        settings.Save(roots.Select(r => r.Path));
+        settings.SaveRegistrations(roots.Select(r => new FolderRegistration(r.Path, r.TargetDepth)));
     }
 
     private void AddPaths(IEnumerable<string> paths)
@@ -93,7 +96,7 @@ public partial class MainWindow : Window
         }).ToArray();
         foreach (var path in normalized)
             if (!roots.Any(r => string.Equals(r.Path, path, StringComparison.OrdinalIgnoreCase)))
-                roots.Add(new RootItem(path, "未確認"));
+                roots.Add(new RootItem(path, "未確認", TargetDepth.SelectedIndex == 1 ? 2 : 1));
         SaveFolders();
         RefreshFolders();
         Roots.SelectAll();
@@ -123,6 +126,21 @@ public partial class MainWindow : Window
         catch (Exception ex) { ShowError(ex); }
     }
 
+    private void ApplyDepth_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            var selected = Roots.SelectedItems.Cast<RootItem>().ToArray();
+            if (selected.Length == 0) throw new InvalidOperationException("階層を変更する登録行を選択してください。");
+            foreach (var item in selected)
+                roots[roots.IndexOf(item)] = item with { TargetDepth = TargetDepth.SelectedIndex == 1 ? 2 : 1 };
+            foreach (var item in roots.Where(r => selected.Any(s => s.Path == r.Path))) Roots.SelectedItems.Add(item);
+            SaveFolders();
+            RefreshFolders();
+        }
+        catch (Exception ex) { ShowError(ex); }
+    }
+
     private void RefreshFolders()
     {
         var selected = Roots.SelectedItems.Cast<RootItem>().Select(r => r.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -135,13 +153,13 @@ public partial class MainWindow : Window
             try
             {
                 if (!Directory.Exists(path)) state = "未接続 / 存在しません";
-                else folders.AddRange(FolderCatalog.Read(path));
+                else folders.AddRange(FolderCatalog.Read(path, roots[i].TargetDepth, AppendLog));
             }
             catch (Exception ex) { state = "アクセス失敗"; AppendLog(path + ": " + ex.Message); }
-            roots[i] = new RootItem(path, state);
+            roots[i] = roots[i] with { Status = state };
         }
         foreach (var item in roots.Where(r => selected.Contains(r.Path))) Roots.SelectedItems.Add(item);
-        var items = folders.OrderBy(f => f.Parent).ThenBy(f => f.Name).ToList();
+        var items = folders.DistinctBy(f => f.FolderPath, StringComparer.OrdinalIgnoreCase).OrderBy(f => f.Parent).ThenBy(f => f.Name).ToList();
         Folders.ItemsSource = items;
         foreach (var item in items.Where(f => selectedFolders.Contains(f.FolderPath))) Folders.SelectedItems.Add(item);
     }
@@ -163,10 +181,10 @@ public partial class MainWindow : Window
             foreach (var parent in parents)
             {
                 if (!Directory.Exists(parent.Path)) { AppendLog("未接続のためスキップ: " + parent.Path); continue; }
-                try { targets.AddRange(FolderCatalog.Read(parent.Path)); }
+                try { targets.AddRange(FolderCatalog.Read(parent.Path, parent.TargetDepth, AppendLog)); }
                 catch (Exception ex) { AppendLog(parent.Path + ": " + ex.Message); }
             }
-            var success = await ArchiveFoldersAsync(targets.ToArray(), parents.Select(p => p.Path).ToArray());
+            var success = await ArchiveFoldersAsync(targets.ToArray(), parents.Select(p => p.Path + "（" + p.TargetDescription + "）").ToArray());
             RefreshFolders();
             Status.Text = success ? "アーカイブ完了" : "中止・スキップまたは失敗（ログを確認）";
         }
@@ -176,13 +194,14 @@ public partial class MainWindow : Window
 
     private async Task<bool> ArchiveFoldersAsync(FolderItem[] selected, IReadOnlyList<string>? confirmationParents = null, bool overwriteExisting = false)
     {
-        var available = selected.Where(f => f.HasData && (overwriteExisting || f.ArchivePaths.Count == 0)).ToArray();
+        var available = selected.Where(f => f.HasData && (overwriteExisting || f.ArchivePaths.Count == 0))
+            .DistinctBy(f => f.FolderPath, StringComparer.OrdinalIgnoreCase).ToArray();
         if (available.Length == 0) throw new InvalidOperationException("アーカイブできるフォルダがありません。データがあり、同名アーカイブがないフォルダを選択してください。既存アーカイブは上書きしません。");
         if (DeleteSource.IsChecked == true && MessageBox.Show(this,
             "検証に成功した各フォルダの中身を削除します。実行しますか？\n" +
             (confirmationParents is null
                 ? string.Join("\n", available.Select(f => f.FolderPath))
-                : "対象の親フォルダ（直下のフォルダを処理）:\n" + string.Join("\n", confirmationParents)),
+                : "対象の登録と対象階層:\n" + string.Join("\n", confirmationParents)),
             "元データの削除確認", MessageBoxButton.YesNo, MessageBoxImage.Warning) != MessageBoxResult.Yes) return false;
         var failed = false;
         var deleteSource = DeleteSource.IsChecked == true;
@@ -424,7 +443,7 @@ public partial class MainWindow : Window
     private void SetBusy(bool value)
     {
         busy = value;
-        BrowseButton.IsEnabled = BackupButton.IsEnabled = RefreshButton.IsEnabled = ExtractButton.IsEnabled = RootPath.IsEnabled = DeleteSource.IsEnabled = Roots.IsEnabled = Folders.IsEnabled = AddButton.IsEnabled = RemoveButton.IsEnabled = !value;
+        BrowseButton.IsEnabled = BackupButton.IsEnabled = RefreshButton.IsEnabled = ExtractButton.IsEnabled = RootPath.IsEnabled = DeleteSource.IsEnabled = Roots.IsEnabled = Folders.IsEnabled = AddButton.IsEnabled = RemoveButton.IsEnabled = TargetDepth.IsEnabled = ApplyDepthButton.IsEnabled = !value;
         if (value)
         {
             FlushLog();
