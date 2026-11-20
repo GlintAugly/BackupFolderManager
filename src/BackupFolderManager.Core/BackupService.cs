@@ -42,6 +42,8 @@ public sealed class BackupService
             var archive = folder + ".7z";
             var par = folder + ".par2";
             var temp = Path.Combine(root, ".backup_verify_" + Guid.NewGuid().ToString("N"));
+            var extractionRoot = Path.GetFullPath(Path.GetTempPath());
+            var extraction = Path.Combine(extractionRoot, ".backup_verify_" + Guid.NewGuid().ToString("N"));
             var deleting = false;
             log("=== " + Path.GetFileName(folder) + " ===");
             try
@@ -60,14 +62,28 @@ public sealed class BackupService
                     Directory.CreateDirectory(temp);
                     archive = Path.Combine(temp, Path.GetFileName(folder) + ".7z");
                     par = Path.Combine(temp, Path.GetFileName(folder) + ".par2");
-                    log("再圧縮: 新しいアーカイブと回復データを検証してから既存出力を置き換えます。");
+                    log("再圧縮: 旧 .7z・SHA256・PAR2 を先に削除し、現在の元データから新規作成します。");
                 }
-                var before = GetInventory(folder);
-                var extraction = overwriteExisting ? Path.Combine(temp, "extracted") : temp;
+                long sourceBytes = 0;
+                var before = GetInventory(folder, length => sourceBytes = checked(sourceBytes + length));
+                CheckExtractionSpace(extractionRoot, sourceBytes);
 
-                // Keep the destructive step last. All verification failures exit via catch.
+                if (overwriteExisting)
+                {
+                    var oldFiles = OutputFiles(root, Path.GetFileName(folder));
+                    foreach (var file in oldFiles) RejectLink(file);
+                    foreach (var file in oldFiles)
+                    {
+                        log("旧出力を削除: " + file);
+                        File.Delete(file);
+                    }
+                }
+                // Source deletion remains last, after all verification succeeds.
                 await CompressAsync(programs, root, folder, archive, log).ConfigureAwait(false);
                 await TestArchiveAsync(programs, root, archive, log).ConfigureAwait(false);
+                // Compression may have consumed space on the TEMP volume too.
+                CheckExtractionSpace(extractionRoot, sourceBytes);
+                log("検証用の一時展開先: " + extraction);
                 await ExtractForVerificationAsync(programs, root, archive, extraction, log).ConfigureAwait(false);
                 VerifyInventory(before, Path.Combine(extraction, Path.GetFileName(folder)), "展開内容が元データと一致しません。");
                 VerifyInventory(before, folder, "処理中に元データが変更されました。");
@@ -91,7 +107,11 @@ public sealed class BackupService
                 log("FAILED: " + folder + ": " + ex.Message +
                     (deleting ? "（削除中に失敗したため、一部削除済みの可能性があります）" : "（元データは削除していません）"));
             }
-            finally { CleanupTemporaryDirectory(root, temp, log); }
+            finally
+            {
+                CleanupTemporaryDirectory(extractionRoot, extraction, log);
+                CleanupTemporaryDirectory(root, temp, log);
+            }
         }
         return new BackupResult(succeeded, skipped, failed);
     }
@@ -124,48 +144,15 @@ public sealed class BackupService
     private static void PublishReplacement(string root, string folder, string staging, Action<string> log)
     {
         var name = Path.GetFileName(folder);
-        var oldFiles = OutputFiles(root, name);
         var newFiles = OutputFiles(staging, name);
-        foreach (var file in oldFiles.Concat(newFiles)) RejectLink(file);
-        // A separate directory survives staging cleanup if rollback cannot complete.
-        var previous = Path.Combine(root, ".backup_verify_previous_" + Guid.NewGuid().ToString("N"));
-        Directory.CreateDirectory(previous);
-        var saved = new List<string>();
-        var published = new List<string>();
-        try
+        foreach (var file in newFiles)
         {
-            foreach (var file in oldFiles)
-            {
-                File.Move(file, Path.Combine(previous, Path.GetFileName(file)));
-                saved.Add(file);
-            }
-            foreach (var file in newFiles)
-            {
-                var destination = Path.Combine(root, Path.GetFileName(file));
-                File.Move(file, destination);
-                published.Add(destination);
-            }
+            RejectLink(file);
+            var destination = Path.Combine(root, Path.GetFileName(file));
+            if (Path.Exists(destination)) throw new IOException("Output already exists: " + destination);
         }
-        catch (Exception publishError)
-        {
-            var rollbackErrors = new List<Exception>();
-            foreach (var file in published.AsEnumerable().Reverse())
-            {
-                try { File.Move(file, Path.Combine(staging, Path.GetFileName(file))); }
-                catch (Exception ex) { rollbackErrors.Add(ex); }
-            }
-            foreach (var file in saved.AsEnumerable().Reverse())
-            {
-                try { File.Move(Path.Combine(previous, Path.GetFileName(file)), file); }
-                catch (Exception ex) { rollbackErrors.Add(ex); }
-            }
-            if (rollbackErrors.Count > 0)
-                throw new IOException("出力の置換と復元に失敗しました。旧ファイルの退避先を確認してください: " + previous,
-                    new AggregateException(new[] { publishError }.Concat(rollbackErrors)));
-            CleanupTemporaryDirectory(root, previous, log);
-            throw;
-        }
-        CleanupTemporaryDirectory(root, previous, log);
+        foreach (var file in newFiles)
+            File.Move(file, Path.Combine(root, Path.GetFileName(file)));
         log("置換完了: " + folder + ".7z（SHA256・PAR2 も更新）");
     }
 
@@ -209,7 +196,21 @@ public sealed class BackupService
         return Convert.ToHexString(await SHA256.HashDataAsync(stream).ConfigureAwait(false));
     }
 
-    private static string[] GetInventory(string root)
+    internal static void CheckExtractionSpace(string directory, long sourceBytes)
+    {
+        var available = new DriveInfo(Path.GetPathRoot(Path.GetFullPath(directory))!).AvailableFreeSpace;
+        EnsureExtractionSpace(sourceBytes, available);
+    }
+
+    internal static void EnsureExtractionSpace(long sourceBytes, long availableBytes)
+    {
+        // Leave room for allocation overhead and concurrent writes.
+        var required = checked(sourceBytes + Math.Max(64L * 1024 * 1024, sourceBytes / 20));
+        if (availableBytes < required)
+            throw new IOException($"TEMP の空き容量が不足しています。必要: {required:N0} バイト、空き: {availableBytes:N0} バイト。検証用の一時展開を中止します。");
+    }
+
+    private static string[] GetInventory(string root, Action<long>? fileSize = null)
     {
         RestoreFiles.ValidateTree(root);
         return Directory.EnumerateFileSystemEntries(root, "*", SearchOption.AllDirectories).Select(path =>
@@ -217,6 +218,7 @@ public sealed class BackupService
             var relative = Path.GetRelativePath(root, path);
             if (Directory.Exists(path)) return "D\t" + relative;
             using var stream = File.OpenRead(path);
+            fileSize?.Invoke(stream.Length);
             return "F\t" + relative + "\t" + stream.Length + "\t" + Convert.ToHexString(SHA256.HashData(stream));
         }).Order(StringComparer.Ordinal).ToArray();
     }

@@ -47,6 +47,12 @@ internal static class RestoreFiles
     }
 
     public static void CopyInto(string source, string destination)
+        => TransferInto(source, destination, move: false);
+
+    public static void MoveInto(string source, string destination)
+        => TransferInto(source, destination, move: true);
+
+    private static void TransferInto(string source, string destination, bool move)
     {
         ValidateTree(source);
         if (Directory.Exists(destination)) ValidateTree(destination);
@@ -57,10 +63,19 @@ internal static class RestoreFiles
             if (Directory.Exists(entry) ? File.Exists(target) : Directory.Exists(target))
                 throw new IOException("ファイルとフォルダが競合しています: " + target);
         }
+        if (move && !Directory.Exists(destination))
+        {
+            Directory.Move(source, destination);
+            return;
+        }
         Directory.CreateDirectory(destination);
         foreach (var dir in Directory.EnumerateDirectories(source, "*", SearchOption.AllDirectories))
             Directory.CreateDirectory(Path.Combine(destination, Path.GetRelativePath(source, dir)));
         foreach (var file in Directory.EnumerateFiles(source, "*", SearchOption.AllDirectories))
-            File.Copy(file, Path.Combine(destination, Path.GetRelativePath(source, file)), overwrite: true);
+        {
+            var target = Path.Combine(destination, Path.GetRelativePath(source, file));
+            if (move) File.Move(file, target, overwrite: true);
+            else File.Copy(file, target, overwrite: true);
+        }
     }
 }

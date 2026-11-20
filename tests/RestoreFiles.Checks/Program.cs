@@ -87,6 +87,34 @@ try
         RestoreFiles.CopyInto(RestoreFiles.ContentRoot(unpacked, "Game"), restored);
         Check(RestoreFiles.AreIdentical(content, restored), "Real 7-Zip archive restores original files and empty directories without nesting");
     }
+    var moveSource = Path.Combine(root, "move-source");
+    var moveDestination = Path.Combine(root, "move-destination");
+    Directory.CreateDirectory(Path.Combine(moveSource, "empty"));
+    File.WriteAllText(Path.Combine(moveSource, "data.txt"), "moved");
+    RestoreFiles.MoveInto(moveSource, moveDestination);
+    Check(!Directory.Exists(moveSource) && File.ReadAllText(Path.Combine(moveDestination, "data.txt")) == "moved" && Directory.Exists(Path.Combine(moveDestination, "empty")), "Move restores a missing destination including empty directories");
+    Directory.CreateDirectory(moveSource);
+    File.WriteAllText(Path.Combine(moveSource, "data.txt"), "replacement");
+    File.WriteAllText(Path.Combine(moveDestination, "extra.txt"), "keep");
+    RestoreFiles.MoveInto(moveSource, moveDestination);
+    Check(!File.Exists(Path.Combine(moveSource, "data.txt")) && File.ReadAllText(Path.Combine(moveDestination, "data.txt")) == "replacement" && File.Exists(Path.Combine(moveDestination, "extra.txt")), "Move overwrites existing files and retains destination-only data");
+    File.WriteAllText(Path.Combine(moveSource, "empty"), "conflict");
+    rejected = false;
+    try { RestoreFiles.MoveInto(moveSource, moveDestination); } catch (IOException) { rejected = true; }
+    Check(rejected && File.Exists(Path.Combine(moveSource, "empty")), "Move rejects type conflicts and retains source data");
+    File.Delete(Path.Combine(moveSource, "empty"));
+    if (OperatingSystem.IsWindows())
+    {
+        var lockedSource = Path.Combine(moveSource, "data.txt");
+        File.WriteAllText(lockedSource, "pending");
+        using (var locked = new FileStream(Path.Combine(moveDestination, "data.txt"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            rejected = false;
+            try { RestoreFiles.MoveInto(moveSource, moveDestination); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { rejected = true; }
+            Check(rejected && File.ReadAllText(lockedSource) == "pending", "Failed overwrite move retains the unmoved source file");
+        }
+    }
     await BackupChecks.RunAsync(root, Check);
     await FolderChecks.RunAsync(root, Check);
     Console.WriteLine($"{checks} checks passed.");

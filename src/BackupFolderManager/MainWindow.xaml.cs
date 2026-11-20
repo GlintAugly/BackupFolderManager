@@ -192,12 +192,12 @@ public partial class MainWindow : Window
         finally { SetBusy(false); }
     }
 
-    private async Task<bool> ArchiveFoldersAsync(FolderItem[] selected, IReadOnlyList<string>? confirmationParents = null, bool overwriteExisting = false)
+    private async Task<bool> ArchiveFoldersAsync(FolderItem[] selected, IReadOnlyList<string>? confirmationParents = null, bool overwriteExisting = false, bool deletionConfirmed = false)
     {
         var available = selected.Where(f => f.HasData && (overwriteExisting || f.ArchivePaths.Count == 0))
             .DistinctBy(f => f.FolderPath, StringComparer.OrdinalIgnoreCase).ToArray();
         if (available.Length == 0) throw new InvalidOperationException("アーカイブできるフォルダがありません。データがあり、同名アーカイブがないフォルダを選択してください。既存アーカイブは上書きしません。");
-        if (DeleteSource.IsChecked == true && MessageBox.Show(this,
+        if (!deletionConfirmed && DeleteSource.IsChecked == true && MessageBox.Show(this,
             "検証に成功した各フォルダの中身を削除します。実行しますか？\n" +
             (confirmationParents is null
                 ? string.Join("\n", available.Select(f => f.FolderPath))
@@ -230,22 +230,25 @@ public partial class MainWindow : Window
         try
         {
             SetBusy(true);
+            var plans = await ChooseFolderOperationsAsync(selected);
+            if (plans is null) { Status.Text = "キャンセルしました"; return; }
             var completed = 0;
             var skipped = 0;
             var failed = 0;
-            foreach (var folder in selected)
+            foreach (var plan in plans)
             {
+                var folder = plan.Folder;
                 try
                 {
-                    var operation = await ChooseFolderOperationAsync(folder);
+                    var operation = plan.Operation;
                     if (operation == FolderOperation.Skip)
                     {
                         skipped++;
                         AppendLog("スキップ: " + folder.FolderPath);
                     }
                     else if (operation is FolderOperation.Archive or FolderOperation.ReplaceArchive
-                        ? await ArchiveFoldersAsync([folder], overwriteExisting: operation == FolderOperation.ReplaceArchive)
-                        : await ExtractFolderAsync(folder)) completed++;
+                        ? await ArchiveFoldersAsync([folder], overwriteExisting: operation == FolderOperation.ReplaceArchive, deletionConfirmed: true)
+                        : await ExtractFolderAsync(folder, plan.Archive, plan.Action, showComparisonDialog: false)) completed++;
                     else skipped++;
                 }
                 catch (Exception ex) { failed++; AppendLog(folder.FolderPath + ": " + ex.Message); }
@@ -259,41 +262,9 @@ public partial class MainWindow : Window
 
     private enum FolderOperation { Skip, Archive, ReplaceArchive, Extract }
 
-    private async Task<FolderOperation> ChooseFolderOperationAsync(FolderItem folder)
+    private async Task<bool> ExtractFolderAsync(FolderItem folder, string? selectedArchive = null, ExistingAction? selectedAction = null, bool showComparisonDialog = true)
     {
-        if (folder.ArchivePaths.Count == 0) return folder.HasData ? FolderOperation.Archive : FolderOperation.Skip;
-        if (!folder.HasData) return FolderOperation.Extract;
-        Status.Text = "更新日時を確認中...";
-        var latest = await Task.Run(() => FolderCatalog.GetLatestFileWriteTimeUtc(folder.FolderPath));
-        var archive = folder.FolderPath + ".7z";
-        var archiveTime = File.Exists(archive) ? File.GetLastWriteTimeUtc(archive) : (DateTime?)null;
-        var timestamps = "展開ファイルの最新更新日時: " + (latest?.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss") ?? "ファイルなし") + "\n" +
-            (archiveTime is { } time
-                ? "既存 .7z の更新日時: " + time.ToLocalTime().ToString("yyyy/MM/dd HH:mm:ss") + "\n" +
-                    (latest > time ? "展開ファイルに .7z より新しい更新日時があります。" : "日時だけでは変更の有無を判断できません。")
-                : "同名 .7z を新規作成します。既存の ZIP は保持します。");
-        Status.Text = "操作を選択してください";
-        var result = FolderOperation.Skip;
-        var dialog = new Window { Owner = this, Title = "フォルダの操作を選択", Width = 600, SizeToContent = SizeToContent.Height, WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.NoResize };
-        var panel = new StackPanel { Margin = new Thickness(20) };
-        panel.Children.Add(new TextBlock { Text = folder.FolderPath + "\n展開データとアーカイブの両方があります。操作を選択してください。\n\n" + timestamps +
-            "\n\n再圧縮は現在の展開内容から作り直し、検証後に同名 .7z・SHA256・PAR2 を置き換えます。\n日時は目安です。削除・改名や日時を保持した変更は検出できません。", TextWrapping = TextWrapping.Wrap });
-        var buttons = new WrapPanel { Margin = new Thickness(0, 16, 0, 0) };
-        foreach (var (label, operation) in new[] { ("展開・同一性チェック", FolderOperation.Extract), ("再圧縮（.7z を置換）", FolderOperation.ReplaceArchive), ("何もしない", FolderOperation.Skip) })
-        {
-            var button = new Button { Content = label, Padding = new Thickness(12, 6, 12, 6), Margin = new Thickness(0, 0, 8, 0), IsCancel = operation == FolderOperation.Skip };
-            button.Click += (_, _) => { result = operation; dialog.Close(); };
-            buttons.Children.Add(button);
-        }
-        panel.Children.Add(buttons);
-        dialog.Content = panel;
-        dialog.ShowDialog();
-        return result;
-    }
-
-    private async Task<bool> ExtractFolderAsync(FolderItem folder)
-    {
-        var archive = ChooseArchive(folder);
+        var archive = selectedArchive ?? ChooseArchive(folder);
         if (archive is null) return false;
         var name = folder.Name;
         if (string.IsNullOrWhiteSpace(name) || name is "." or "..") throw new IOException("展開先のフォルダ名が無効です。");
@@ -301,7 +272,7 @@ public partial class MainWindow : Window
         if (File.Exists(destination)) throw new IOException("展開先と同名のファイルがあります。");
         if (Directory.Exists(destination)) RestoreFiles.ValidateTree(destination);
         var action = ExistingAction.Overwrite;
-        if (Directory.Exists(destination) && Directory.EnumerateFileSystemEntries(destination).Any()) action = ChooseExistingAction(destination);
+        if (Directory.Exists(destination) && Directory.EnumerateFileSystemEntries(destination).Any()) action = selectedAction ?? ChooseExistingAction(destination);
         if (action == ExistingAction.Cancel) return false;
         var seven = RequiredPrograms.FindSevenZip();
         var hashPath = archive + ".sha256";
@@ -315,6 +286,7 @@ public partial class MainWindow : Window
         }
         var staging = Path.Combine(folder.Parent, ".backup_verify_restore_" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(staging);
+        var preserveStaging = false;
         try
         {
             AppendLog("一時展開先: " + staging);
@@ -325,21 +297,26 @@ public partial class MainWindow : Window
             {
                 var identical = await Task.Run(() => RestoreFiles.AreIdentical(content, destination));
                 Status.Text = identical ? "同一性チェック: 一致" : "同一性チェック: 不一致";
-                MessageBox.Show(this, identical ? "フォルダ構成と全ファイルの SHA256 が一致しました。" : "フォルダ構成またはファイル内容が異なります。変更は行っていません。", "同一性チェック");
+                AppendLog(destination + (identical ? ": 同一性チェック: 一致" : ": 同一性チェック: 不一致"));
+                if (showComparisonDialog) MessageBox.Show(this, identical ? "フォルダ構成と全ファイルの SHA256 が一致しました。" : "フォルダ構成またはファイル内容が異なります。変更は行っていません。", "同一性チェック");
                 if (!identical) return false;
             }
             else
             {
                 AppendLog("復元先: " + destination);
-                await Task.Run(() => RestoreFiles.CopyInto(content, destination));
+                preserveStaging = true;
+                await Task.Run(() => RestoreFiles.MoveInto(content, destination));
+                preserveStaging = false;
                 Status.Text = "展開完了";
             }
             Process.Start(new ProcessStartInfo("explorer.exe") { ArgumentList = { destination }, UseShellExecute = true });
         }
         finally
         {
+            if (preserveStaging)
+                AppendLog("復元先への移動が完了していません。未移動のデータを一時フォルダに保持します: " + staging + " / 復元先: " + destination);
             var fullStaging = Path.GetFullPath(staging);
-            if (string.Equals(Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(fullStaging)!), Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder.Parent)), StringComparison.OrdinalIgnoreCase) &&
+            if (!preserveStaging && string.Equals(Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(fullStaging)!), Path.TrimEndingDirectorySeparator(Path.GetFullPath(folder.Parent)), StringComparison.OrdinalIgnoreCase) &&
                 Path.GetFileName(fullStaging).StartsWith(".backup_verify_restore_", StringComparison.Ordinal) && Directory.Exists(fullStaging))
             {
                 try { Directory.Delete(fullStaging, recursive: true); }
