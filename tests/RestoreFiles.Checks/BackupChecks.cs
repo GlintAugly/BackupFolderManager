@@ -5,6 +5,16 @@ internal static class BackupChecks
 {
     public static async Task RunAsync(string testRoot, Action<bool, string> check)
     {
+        const long reserve = 64L * 1024 * 1024;
+        BackupService.EnsureExtractionSpace(1024, reserve + 1024);
+        var insufficientSpace = false;
+        try { BackupService.EnsureExtractionSpace(1024, reserve + 1023); }
+        catch (IOException) { insufficientSpace = true; }
+        check(insufficientSpace, "Temporary extraction requires source size plus free-space reserve");
+        var largeInsufficientSpace = false;
+        try { BackupService.EnsureExtractionSpace(2_000_000_000, 2_099_999_999); }
+        catch (IOException) { largeInsufficientSpace = true; }
+        check(largeInsufficientSpace, "Large temporary extractions reserve an additional five percent");
         var settings = new FolderSettings(Path.Combine(testRoot, "settings.json"));
         var disconnected = Path.Combine(testRoot, "disconnected-drive", "games");
         settings.Save([disconnected]);
@@ -43,11 +53,17 @@ internal static class BackupChecks
             File.WriteAllText(sourceFile, "original");
             Directory.CreateDirectory(Path.Combine(root, "AlreadyEmpty"));
             var calls = new List<string>();
+            string? extractionPath = null;
             var log = new InlineProgress();
             var service = new BackupService(tools, (executable, arguments, working, _) =>
             {
                 var command = arguments[0];
                 calls.Add(command);
+                if (command == "x")
+                {
+                    extractionPath = arguments.Single(a => a.StartsWith("-o"))[2..];
+                    check(Path.TrimEndingDirectorySeparator(Path.GetDirectoryName(extractionPath)!) == Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.GetTempPath())), "Backup verification extracts into TEMP");
+                }
                 if (scenario == "fail-" + command) throw new IOException("Injected external program failure");
                 if (command == "a")
                 {
@@ -91,6 +107,7 @@ internal static class BackupChecks
                 if (scenario is "bad-extraction" or "source-changed") check(!calls.Contains("c"), scenario + ": PAR2 stage is not reached");
             }
             check(!Directory.GetDirectories(root).Any(p => Path.GetFileName(p).StartsWith(".backup_verify_")), scenario + ": verification directory is cleaned");
+            check(extractionPath is null || !Directory.Exists(extractionPath), scenario + ": TEMP extraction is cleaned after success or failure");
         }
 
         var collisionRoot = Path.Combine(testRoot, "existing-output");
@@ -134,11 +151,12 @@ internal static class BackupChecks
             var service = new BackupService(tools, (_, arguments, working, _) =>
             {
                 var command = arguments[0];
+                if (command == "a") check(old.Keys.All(path => !File.Exists(path)), "Old outputs are deleted before compression starts");
                 if (scenario == "fail-" + command) throw new IOException("Injected failure");
                 if (command == "a")
                 {
                     var output = arguments[^2];
-                    check(working == root && output != source + ".7z" && !File.Exists(output), "Replacement is built fresh beside the source without modifying the old archive");
+                    check(working == root && output != source + ".7z" && !File.Exists(output), "Replacement is built fresh beside the source after deleting old outputs");
                     File.WriteAllText(output, "new archive");
                 }
                 if (command == "x")
@@ -154,12 +172,12 @@ internal static class BackupChecks
                 }
                 if (command == "v")
                 {
-                    check(old.All(item => File.ReadAllText(item.Key) == item.Value), "Old output set remains untouched through recovery verification");
+                    check(old.Keys.All(path => !File.Exists(path)), "Old outputs remain removed through recovery verification");
                     if (scenario == "source-change") File.WriteAllText(data, "changed during verification");
                 }
                 return Task.CompletedTask;
             });
-            var result = await service.BackupAsync(root, scenario == "replace-delete", selectedFolders: [source], overwriteExisting: true);
+            var result = await service.BackupAsync(root, scenario != "replace-keep", selectedFolders: [source], overwriteExisting: true);
             if (scenario.StartsWith("replace-"))
             {
                 check(result == new BackupResult(1, 0, 0) && File.ReadAllText(source + ".7z") == "new archive" && File.ReadAllText(source + ".par2") == "new recovery index", scenario + ": verified outputs replace old outputs");
@@ -169,7 +187,7 @@ internal static class BackupChecks
                 check(File.Exists(data) == (scenario == "replace-keep"), "Replacement respects source retention after publication");
             }
             else
-                check(result.Failed == 1 && File.Exists(data) && old.All(item => File.ReadAllText(item.Key) == item.Value), scenario + ": failure preserves or restores the entire old output set and source");
+                check(result.Failed == 1 && File.Exists(data) && old.Keys.All(path => !File.Exists(path)), scenario + ": failure retains source without restoring old outputs");
             check(File.ReadAllText(source + ".zip") == "unrelated zip", "Replacement leaves existing ZIP untouched");
             check(!Directory.EnumerateDirectories(root).Any(p => Path.GetFileName(p).StartsWith(".backup_verify_")), scenario + ": replacement temporary directories are cleaned");
         }
