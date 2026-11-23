@@ -40,7 +40,18 @@
                 <Button x:Name="RefreshButton" Content="一覧更新" Padding="16,6" Click="Refresh_Click"/>
             </WrapPanel>
         </StackPanel>
-        <ListView x:Name="Folders" Grid.Row="2" SelectionMode="Extended">
+        <Grid Grid.Row="2">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="*"/>
+            </Grid.RowDefinitions>
+            <DockPanel Margin="0,0,0,8">
+                <TextBlock Text="対象フォルダを検索:" VerticalAlignment="Center" Margin="0,0,8,0"/>
+                <Button x:Name="ClearSearchButton" DockPanel.Dock="Right" Content="クリア" Padding="12,4" Margin="8,0,0,0" Click="ClearSearch_Click"/>
+                <TextBlock x:Name="SearchCount" DockPanel.Dock="Right" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                <TextBox x:Name="FolderSearch" VerticalContentAlignment="Center" TextChanged="FolderSearch_TextChanged" ToolTip="フォルダ名・親フォルダのパス・アーカイブ名を部分一致で検索します（大文字小文字を区別しません）"/>
+            </DockPanel>
+        <ListView x:Name="Folders" Grid.Row="1" SelectionMode="Extended">
             <ListView.View><GridView>
                 <GridViewColumn Header="フォルダ名" DisplayMemberBinding="{Binding Name}" Width="190"/>
                 <GridViewColumn Header="状態" DisplayMemberBinding="{Binding State}" Width="270"/>
@@ -48,6 +59,7 @@
                 <GridViewColumn Header="アーカイブ (.7z / .zip)" DisplayMemberBinding="{Binding Archives}" Width="230"/>
             </GridView></ListView.View>
         </ListView>
+        </Grid>
         <DockPanel Grid.Row="3" Margin="0,12">
             <Button x:Name="ExtractButton" Content="選択フォルダを展開／圧縮" ToolTip="下の一覧の選択行が対象。展開後はフォルダを開きます。" Padding="16,6" Click="Extract_Click" DockPanel.Dock="Left"/>
             <TextBlock x:Name="Status" Text="待機中" Margin="16,0" VerticalAlignment="Center"/>

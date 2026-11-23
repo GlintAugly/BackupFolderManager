@@ -13,6 +13,7 @@ namespace BackupFolderManager;
 public partial class MainWindow : Window
 {
     private bool busy;
+    private IReadOnlyList<FolderItem> allFolders = [];
     private sealed record RootItem(string Path, string Status, int TargetDepth = 1)
     {
         public string TargetDescription => TargetDepth == 2 ? "孫フォルダ" : "直下のフォルダ";
@@ -160,8 +161,30 @@ public partial class MainWindow : Window
         }
         foreach (var item in roots.Where(r => selected.Contains(r.Path))) Roots.SelectedItems.Add(item);
         var items = folders.DistinctBy(f => f.FolderPath, StringComparer.OrdinalIgnoreCase).OrderBy(f => f.Parent).ThenBy(f => f.Name).ToList();
-        Folders.ItemsSource = items;
-        foreach (var item in items.Where(f => selectedFolders.Contains(f.FolderPath))) Folders.SelectedItems.Add(item);
+        allFolders = items;
+        ApplyFolderSearch(selectedFolders);
+    }
+
+    private void ApplyFolderSearch(HashSet<string>? selectedPaths = null)
+    {
+        if (Folders is null || FolderSearch is null || SearchCount is null) return;
+        selectedPaths ??= Folders.SelectedItems.Cast<FolderItem>().Select(f => f.FolderPath)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var query = FolderSearch.Text.Trim();
+        var visible = allFolders.Where(f => query.Length == 0 ||
+            f.FolderPath.Contains(query, StringComparison.OrdinalIgnoreCase) ||
+            f.ArchivePaths.Any(p => Path.GetFileName(p).Contains(query, StringComparison.OrdinalIgnoreCase))).ToList();
+        Folders.ItemsSource = visible;
+        foreach (var item in visible.Where(f => selectedPaths.Contains(f.FolderPath))) Folders.SelectedItems.Add(item);
+        SearchCount.Text = $"{visible.Count} / {allFolders.Count} 件";
+    }
+
+    private void FolderSearch_TextChanged(object sender, TextChangedEventArgs e) => ApplyFolderSearch();
+
+    private void ClearSearch_Click(object sender, RoutedEventArgs e)
+    {
+        FolderSearch.Clear();
+        FolderSearch.Focus();
     }
 
     private void Refresh_Click(object sender, RoutedEventArgs e)
@@ -420,6 +443,7 @@ public partial class MainWindow : Window
     private void SetBusy(bool value)
     {
         busy = value;
+        FolderSearch.IsEnabled = ClearSearchButton.IsEnabled = !value;
         BrowseButton.IsEnabled = BackupButton.IsEnabled = RefreshButton.IsEnabled = ExtractButton.IsEnabled = RootPath.IsEnabled = DeleteSource.IsEnabled = Roots.IsEnabled = Folders.IsEnabled = AddButton.IsEnabled = RemoveButton.IsEnabled = TargetDepth.IsEnabled = ApplyDepthButton.IsEnabled = !value;
         if (value)
         {
